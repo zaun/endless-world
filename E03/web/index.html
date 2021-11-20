@@ -1,0 +1,198 @@
+<html>
+  <head>
+    <style>
+      .notes {
+        width: 200px;
+        float: left;
+        margin-left: 2em;
+      }
+      #map {
+        width: 960px;
+        height: 960px;
+        float: left;
+        overflow: auto;
+      }
+      .row {
+        display: block;
+        white-space: nowrap;
+        font-size: 0;
+      }
+      canvas {
+        display: inline-block;
+        margin: 0px;
+      }
+    </style>
+  </head>
+  <body onkeypress="onKeypress(event);">
+    <div id="map"></div>
+    <div class="notes">
+      <p>Simple viewer for a map server. Press A W S or D to move around.</p>
+      <p>Position: <span id="x"></span>, <span id="y"></span></p>
+      <p>Mouse: <span id="mx"></span>, <span id="my"></span></p>
+      <p>Zoom: <input id="zoom" type="range" oninput="onZoom()" min="1" max="60" value="3"></p>
+      <button onclick="toggleCoords()">Toggle Coords</button>
+      <button onclick="toggleBorder()">Toggle Border</button>
+    </div>
+    <script>
+      var mapSize = 3;
+      var centerPosX = 0;
+      var centerPosY = 0;
+      var zoom = 3;
+      var drawCoord = false;
+      var drawBorder = false;
+      var chunkSize = 0;
+      var cache = {};
+
+      function toggleCoords() {
+        drawCoord = !drawCoord;
+        updateScreen();
+      }
+
+      function toggleBorder() {
+        drawBorder = !drawBorder;
+        updateScreen();
+      }
+
+      function getData(posX, posY) {
+        var cacheId = posX + ':' + posY;
+
+        if (cache[cacheId]) {
+          return Promise.resolve(cache[cacheId]);
+        }
+
+        return fetch('http://localhost:7000/chunk/' + posX + '/' + posY).then((response) => {
+          return response.json();
+        }).then((data) => {
+          cache[cacheId] = data;
+          return cache[cacheId];
+        });
+      }
+
+      function drawPixel(ctx, x, y, zoom, color) {
+        ctx.fillStyle = 'rgb(' + color + ', ' + color + ', ' + color + ')';
+        ctx.fillRect(x * zoom, y * zoom, zoom, zoom);
+      }
+
+      function drawPixelBorder(ctx, x, y, zoom, color) {
+        ctx.fillStyle = 'rgb(' + 0 + ', ' + 0 + ', ' + color + ')';
+        ctx.fillRect(x * zoom, y * zoom, zoom, zoom);
+      }
+
+      function drawChunk(id, data) {
+        var canvas = document.querySelector('#chunk' + id);
+        var ctx = canvas.getContext('2d');
+
+        chunkSize = data.size;
+        borderSize = data.borderSize;
+        if (drawBorder) {
+          chunkSize += data.borderSize;
+          borderSize = 0;
+        }
+
+        canvas.setAttribute('width', chunkSize * zoom);
+        canvas.setAttribute('height', chunkSize * zoom);
+
+        for (var x = 0; x < chunkSize; x++) {
+          for (var y = 0; y < chunkSize; y++) {
+            if (drawBorder && (x === 0 || y === 0 || x === chunkSize - 1 || y === chunkSize - 1)) {
+              drawPixelBorder(ctx, x, y, zoom, data.heightMap[y + borderSize][x + borderSize] * 255);
+            } else {
+              drawPixel(ctx, x, y, zoom, data.heightMap[y + borderSize][x + borderSize] * 255);
+            }
+          }
+        }
+
+        if (drawCoord) {
+          ctx.font = '20px serif';
+          ctx.fillStyle = 'rgb(0, 0, 0)';
+          ctx.strokeStyle = 'rgb(255, 255, 255)';
+          ctx.lineWidth = 3;
+          ctx.strokeText('(' + data.location.x + ',' + data.location.y + ')', 10, 20);
+          ctx.fillText('(' + data.location.x + ',' + data.location.y + ')', 10, 20);
+        }
+      }
+
+      function clearChunk(id) {
+        var canvas = document.querySelector('#chunk' + id);
+        var ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+
+      function loadChunk(id, x, y) {
+        clearChunk(id);
+        getData(x, y).then((data) => {
+          drawChunk(id, data);
+        });
+      }
+
+      function initScreen() {
+        var map = document.querySelector('#map');
+        for(var y = 0; y < mapSize; y += 1) {
+          var row = document.createElement('div');
+          row.id = 'row' + (y + 1);
+          row.className = 'row';
+          for(var x = 0; x < mapSize; x += 1) {
+            var cell = document.createElement('canvas');
+            cell.id = 'chunk' + (y * mapSize + x + 1);
+            cell.className = 'chunk';
+            cell.addEventListener('mousemove', onMouse);
+            cell.setAttribute('data-x', x);
+            cell.setAttribute('data-y', y);
+            row.appendChild(cell);
+          }
+          map.appendChild(row);
+        }
+        updateScreen();
+      }
+
+      function updateScreen() {
+        var offset = Math.round(mapSize / 2) - 1;
+        for(var y = 0; y < mapSize; y += 1) {
+          for(var x = 0; x < mapSize; x += 1) {
+            loadChunk(y * mapSize + x + 1, centerPosX + x - offset, centerPosY + y - offset);
+          }
+        }
+        var elX = document.querySelector('#x');
+        var elY = document.querySelector('#y');
+        elX.innerHTML = centerPosX;
+        elY.innerHTML = centerPosY;
+      }
+
+      function onKeypress(event) {
+        if (event.code === 'KeyW') {
+          centerPosY -= 1;
+        } else if (event.code === 'KeyS') {
+          centerPosY += 1;
+        } else if (event.code === 'KeyA') {
+          centerPosX -= 1;
+        } else if (event.code === 'KeyD') {
+          centerPosX += 1;
+        }
+
+        updateScreen();
+      }
+
+      function onMouse(event) {
+        var elX = document.querySelector('#mx');
+        var elY = document.querySelector('#my');
+        var x = event.target.getAttribute('data-x');
+        var y = event.target.getAttribute('data-y');
+        var rect = event.target.getBoundingClientRect();
+
+        var cellX = Math.floor((event.clientX - rect.left) / zoom) + 1;
+        var cellY = Math.floor((event.clientY - rect.top) / zoom) + 1;
+
+        elX.innerHTML = cellX + (x * chunkSize);
+        elY.innerHTML = cellY + (y * chunkSize);
+      }
+
+      function onZoom() {
+        var elZoom = document.querySelector('#zoom');
+        zoom = elZoom.value;
+        updateScreen();
+      }
+
+      initScreen();
+    </script>
+  </body>
+</html>

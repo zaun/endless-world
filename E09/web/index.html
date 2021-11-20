@@ -1,0 +1,264 @@
+<html>
+  <head>
+    <style>
+      .notes {
+        width: 200px;
+        float: left;
+        margin-left: 2em;
+      }
+      #map {
+        width: 960px;
+        float: left;
+      }
+      #data {
+        width: 960px;
+        float: left;
+        white-space: pre;
+        overflow: auto;
+        font-size: 12px;
+      }
+      .row {
+        display: block;
+        white-space: nowrap;
+        font-size: 0;
+      }
+      canvas {
+        display: inline-block;
+        margin: 0px;
+      }
+      .hide {
+        display: none;
+      }
+    </style>
+  </head>
+  <body onkeypress="onKeypress(event);">
+    <div id="map"></div>
+    <div id="data" class="hide">--</div>
+    <div class="notes">
+      <p>Simple viewer for a map server. Press A W S or D to move around.</p>
+      <p>Mouse Map: <span id="mx">--</span>, <span id="my">--</span></p>
+      <p>Map Cell: <span id="cx">--</span>, <span id="cy">--</span></p>
+      <p>Mouse Region: <span id="r">--</span>, <span id="q">--</span></p>
+      <button onclick="toggleCoords()">Toggle Coords</button>
+      <button onclick="toggleRegion()">Toggle Region</button>
+      <button onclick="toggleData()">Toggle Data</button>
+      <button onclick="toggleColor()">Toggle Color</button>
+    </div>
+    <script>
+      var mapSize = 5;
+      var centerPosX = 0;
+      var centerPosY = 0;
+      var zoom = 2;
+      var drawCoord = false;
+      var drawRegion = false;
+      var viewData = false;
+      var drawColor = false;
+      var chunkSize = 0;
+      var cache = {};
+
+      // allow user to set location in query
+      var urlSearchParams = new URLSearchParams(window.location.search);
+      var params = Object.fromEntries(urlSearchParams.entries());
+      if (params.x) {
+        centerPosX = parseInt(params.x);
+      }if (params.y) {
+        centerPosY = parseInt(params.y);
+      }
+
+      function toggleCoords() {
+        drawCoord = !drawCoord;
+        updateScreen();
+      }
+
+      function toggleRegion() {
+        drawRegion = !drawRegion;
+        updateScreen();
+      }
+
+      function toggleColor() {
+        drawColor = !drawColor;
+        updateScreen();
+      }
+
+      function getData(posX, posY) {
+        var cacheId = posX + ':' + posY;
+
+        if (cache[cacheId]) {
+          return Promise.resolve(cache[cacheId]);
+        }
+
+        return fetch('http://localhost:7000/chunk/' + posX + '/' + posY).then((response) => {
+          return response.json();
+        }).then((data) => {
+          cache[cacheId] = data;
+          return cache[cacheId];
+        });
+      }
+
+      function drawPixel(ctx, x, y, zoom, color) {
+        if (color < 70) {
+          // Water
+          ctx.fillStyle = 'rgb(0, 0, ' + color + ')';
+        } else if (color < 75) {
+          // Sand
+          ctx.fillStyle = 'rgb(' + (color * 1.3) + ', ' + (color * 1) + ', ' + (color * 0.9) + ')';
+        } else if (color < 200) {
+          // Grass
+          ctx.fillStyle = 'rgb(0, ' + color + ', 0)';
+        } else if (color < 240) {
+          // Rock
+          ctx.fillStyle = 'rgb(' + (color / 3) + ', ' + (color / 3) + ', ' + (color / 3) + ')';
+        } else {
+          // Snow
+          ctx.fillStyle = 'rgb(' + color + ', ' + color + ', ' + color + ')';
+        }
+        if (!drawColor) {
+          ctx.fillStyle = 'rgb(' + color + ', ' + color + ', ' + color + ')';
+        }
+        ctx.fillRect(x * zoom, y * zoom, zoom, zoom);
+      }
+
+      function drawChunk(id, data) {
+        var canvas = document.querySelector('#chunk' + id);
+        var ctx = canvas.getContext('2d');
+
+        canvas.setAttribute('width', data.size * zoom);
+        canvas.setAttribute('height', data.size * zoom);
+        canvas.setAttribute('data-x', data.location.x);
+        canvas.setAttribute('data-y', data.location.y);
+        canvas.setAttribute('data-r', data.region.r);
+        canvas.setAttribute('data-q', data.region.q);
+
+        chunkSize = data.size;
+
+        for (var x = 0; x < data.size; x++) {
+          for (var y = 0; y < data.size; y++) {
+            drawPixel(ctx, x, y, zoom, data.heightMap[y + data.borderSize][x + data.borderSize] * 255);
+          }
+        }
+
+        if (drawCoord) {
+          ctx.font = '20px serif';
+          ctx.fillStyle = 'rgb(0, 0, 0)';
+          ctx.strokeStyle = 'rgb(255, 255, 255)';
+          ctx.lineWidth = 3;
+          ctx.strokeText('(' + data.location.x + ',' + data.location.y + ')', 10, 20);
+          ctx.fillText('(' + data.location.x + ',' + data.location.y + ')', 10, 20);
+        }
+
+        if (drawRegion) {
+          ctx.font = '20px serif';
+          ctx.fillStyle = 'rgb(0, 0, 0)';
+          ctx.strokeStyle = 'rgb(255, 255, 255)';
+          ctx.lineWidth = 3;
+          ctx.strokeText('(' + data.region.r + ',' + data.region.q + ')', 10, 45);
+          ctx.fillText('(' + data.region.r + ',' + data.region.q + ')', 10, 45);
+        }
+      }
+
+      function clearChunk(id) {
+        var canvas = document.querySelector('#chunk' + id);
+        var ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+
+      function loadChunk(id, x, y, addData) {
+        clearChunk(id);
+        getData(x, y).then((data) => {
+          drawChunk(id, data);
+          if (addData) {
+            var dataEl = document.querySelector('#data');
+            dataEl.innerHTML = '';
+            console.log(data);
+            for (var y = 0; y < data.size; y++) {
+              dataEl.innerHTML += JSON.stringify(data.heightMap[y]) + '\n';
+            }
+          }
+        });
+      }
+
+      function initScreen() {
+        var map = document.querySelector('#map');
+        for(var y = 0; y < mapSize; y += 1) {
+          var row = document.createElement('div');
+          row.id = 'row' + (y + 1);
+          row.className = 'row';
+          for(var x = 0; x < mapSize; x += 1) {
+            var cell = document.createElement('canvas');
+            cell.id = 'chunk' + (y * mapSize + x + 1);
+            cell.className = 'chunk';
+            row.appendChild(cell);
+            cell.addEventListener('mousemove', onMouse);
+          }
+          map.appendChild(row);
+        }
+        updateScreen();
+      }
+
+      function updateScreen() {
+        var offset = Math.round(mapSize / 2) - 1;
+        for(var y = 0; y < mapSize; y += 1) {
+          for(var x = 0; x < mapSize; x += 1) {
+            loadChunk(y * mapSize + x + 1, centerPosX + x - offset, centerPosY + y - offset, x == offset && y == offset);
+          }
+        }
+      }
+
+      function onKeypress(event) {
+        if (event.code === 'KeyW') {
+          centerPosY -= 1;
+        } else if (event.code === 'KeyS') {
+          centerPosY += 1;
+        } else if (event.code === 'KeyA') {
+          centerPosX -= 1;
+        } else if (event.code === 'KeyD') {
+          centerPosX += 1;
+        }
+
+        updateScreen();
+      }
+
+      function onMouse(event) {
+        var elMX = document.querySelector('#mx');
+        var elMY = document.querySelector('#my');
+        var elCX = document.querySelector('#cx');
+        var elCY = document.querySelector('#cy');
+        var elR = document.querySelector('#r');
+        var elQ = document.querySelector('#q');
+
+        var x = event.target.getAttribute('data-x');
+        var y = event.target.getAttribute('data-y');
+        var r = event.target.getAttribute('data-r');
+        var q = event.target.getAttribute('data-q');
+
+        var rect = event.target.getBoundingClientRect();
+        var cellX = Math.floor((event.clientX - rect.left) / zoom) + 1;
+        var cellY = Math.floor((event.clientY - rect.top) / zoom) + 1;
+
+        elCX.innerHTML = x;
+        elCY.innerHTML = y;
+        
+        elMX.innerHTML = cellX + (x * chunkSize);
+        elMY.innerHTML = cellY + (y * chunkSize);
+
+        elR.innerHTML = r;
+        elQ.innerHTML = q;
+      }
+
+      function toggleData() {
+        viewData = !viewData;
+        var map = document.querySelector('#map');
+        var data = document.querySelector('#data');
+        if (viewData) {
+          map.classList.add('hide');
+          data.classList.remove('hide');
+        } else {
+          data.classList.add('hide');
+          map.classList.remove('hide');
+        }
+      }
+
+      initScreen();
+    </script>
+  </body>
+</html>
